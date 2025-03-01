@@ -18,6 +18,10 @@ def fetch_google_sheet():
     worksheet = sh.get_worksheet(0) 
     data = worksheet.get_all_records()  
     df = pd.DataFrame(data) 
+
+    if "is_complete" in df.columns:
+        df = df[df["is_complete"] == 1]
+        
     return df
 
 def get_created_by_id(name):
