@@ -3,6 +3,7 @@ import pandas as pd
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import gspread
+from datetime import datetime
 
 load_dotenv()
 
@@ -43,12 +44,10 @@ def insert_new_records(df):
         category = row.get("category")
         status = row.get("status")
         created_by_name = row.get("created_by")
-        print(name,email,address,customer_type,category,status,created_by_name,phone_number)
         created_by_id = get_created_by_id(created_by_name) if created_by_name else None
         response = supabase.table("customers").select("phone").eq("phone", phone_number).execute()
         
         if not response.data: 
-            print("not response")
             supabase.table("customers").insert({
                 "name": name,
                 "email": email,
@@ -63,6 +62,8 @@ def insert_new_records(df):
 
 
     supabase.table("sync_customer_logs").insert({"records_inserted": new_count}).execute()
+    supabase.table("controls").update({"config_value": datetime.utcnow().isoformat()}).eq("config_key", "last_customer_synced_on").execute()
+
     print(f"Inserted {new_count} new records.")
 
 if __name__ == "__main__":
