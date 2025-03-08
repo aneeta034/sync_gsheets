@@ -72,8 +72,8 @@ def sync_customers():
     
     
     status_columns = [col for col in processed_df.columns if 'STATUS' in col]
-    if len(status_columns) >= 2:
-        second_status_column = status_columns[1]
+    if len(status_columns) >= 3:
+        second_status_column = status_columns[2]
         print(f"Using second status column: '{second_status_column}'")
     else:
         second_status_column = "STATUS " if "STATUS " in processed_df.columns else "STATUS"

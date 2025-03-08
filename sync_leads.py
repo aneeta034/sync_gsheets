@@ -104,7 +104,7 @@ def sync_leads():
                     "follow_up_message": row.get("FOLLOW UP MESSAGE "),
                     "feedback": row.get("FEED BACK"),
                     "enquiry_per_day": row.get("ENQUIRY PER DAY "),
-                    "created_at": row.get("parsed_timestamp"),  
+                    "timestamp": row.get("parsed_timestamp"),  
                 }
                 
                 record = {k: None if pd.isna(v) else v for k, v in record.items()}
