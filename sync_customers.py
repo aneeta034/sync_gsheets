@@ -3,7 +3,7 @@ import pandas as pd
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil import parser
 
 load_dotenv()
@@ -44,6 +44,46 @@ def parse_timestamp(timestamp_str):
     except Exception as e:
         print(f"Error parsing timestamp '{timestamp_str}': {str(e)}")
         return None
+def get_dynamic_threshold_timestamp():
+    try:
+        
+        response = (
+            supabase.table("sync_customer_logs")
+            .select("timestamp")
+            .gt("records_inserted", 0)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        
+        if not response.data:
+            print("No previous successful sync found, using default threshold")
+        
+        last_sync_time = datetime.fromisoformat(response.data[0]['timestamp'].replace('Z', ''))
+        window_start = last_sync_time - timedelta(minutes=5)
+        
+        
+        customer_response = (
+            supabase.table("customers")
+            .select("customer_created_date")
+            .gte("created_at", window_start.isoformat())
+            .lte("created_at", last_sync_time.isoformat())
+            .order("customer_created_date", desc=False)  
+            .limit(1)
+            .execute()
+        )
+        
+        if not customer_response.data:
+            print(f"No customers found in the time window, using last sync time: {last_sync_time}")
+            return last_sync_time
+        
+        threshold = datetime.fromisoformat(customer_response.data[0]['customer_created_date'].replace('Z', ''))
+        print(f"Using dynamic threshold timestamp: {threshold}")
+        return threshold
+        
+    except Exception as e:
+        print(f"Error determining threshold timestamp: {str(e)}")
+        return 
 
 
 def sync_customers():
@@ -61,7 +101,14 @@ def sync_customers():
     
     if 'Timestamp' in processed_df.columns:
         processed_df['parsed_timestamp'] = processed_df['Timestamp'].apply(parse_timestamp)
+
     
+    threshold_timestamp = get_dynamic_threshold_timestamp()
+
+    
+    if 'parsed_timestamp' in processed_df.columns:
+        processed_df['parsed_timestamp'] = pd.to_datetime(processed_df['parsed_timestamp'])
+        processed_df = processed_df[processed_df['parsed_timestamp'] > threshold_timestamp]
     
     processed_df = processed_df[processed_df['normalized_phone'].notna()]
     
@@ -121,7 +168,7 @@ def sync_customers():
                 "customer_type": row.get("TYPE") if "TYPE" in processed_df.columns else None,
                 "category": row.get("REQUIRED ITEM /CATEGORY") if "REQUIRED ITEM /CATEGORY" in processed_df.columns else None,
                 "status": row.get(second_status_column),  
-                "customer_created_date": row.get("parsed_timestamp")
+                "customer_created_date":  row.get("parsed_timestamp").isoformat() if pd.notna(row.get("parsed_timestamp")) else None 
             }
             
             

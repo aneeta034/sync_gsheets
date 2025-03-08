@@ -1,48 +1,33 @@
 import requests
-import os
+import json
 from supabase import create_client, Client
-from dotenv import load_dotenv
 
+def login_and_fetch_tables(credentials):
+    try:
+        url = f"{credentials['SUPABASE_URL']}/auth/v1/token?grant_type=password"
+        payload = {"email": credentials["EMAIL"], "password": credentials["PASSWORD"]}
+        headers = {"apikey": credentials["SUPABASE_API_KEY"], "Content-Type": "application/json"}
 
-load_dotenv()
+        response = requests.post(url, json=payload, headers=headers)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-API_KEY = os.getenv("SUPABASE_API_KEY")
-EMAIL = os.getenv("EMAIL")
-PASSWORD = os.getenv("PASSWORD")
-TABLE_NAME = "controls"
-CONFIG_KEY = "last_lead_synced_on"
+        if response.status_code != 200:
+            print(f"Login failed: {response.json()}")
+            return None
 
-def login_and_access_project():
-    
-    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
-    payload = {"email": EMAIL, "password": PASSWORD}
-    headers = {"apikey": API_KEY, "Content-Type": "application/json"}
+        print(f"Successfully logged in !")
 
-    response = requests.post(url, json=payload, headers=headers)
-
-    if response.status_code == 200:
-        print("Successfully logged in!")
-    else:
-        print(f"Login failed: {response.json()}")
         return
 
-    
-    supabase: Client = create_client(SUPABASE_URL, API_KEY)
+    except Exception as e:
+        print(f"Error accessing {credentials['SUPABASE_URL']}: {e}")
+        return 
 
-    data = (
-        supabase.table(TABLE_NAME)
-        .select("config_value")
-        .eq("config_key", CONFIG_KEY)
-        .execute()
-    )
+def main():
+    with open("credentials.json", "r") as file:
+        credentials_list = json.load(file)
 
-    if data.data:
-        last_synced = data.data[0]["config_value"]
-        print(f"Last Lead Synced On: {last_synced}")
-    else:
-        print("Config key not found.")
-
+    for credentials in credentials_list:
+        login_and_fetch_tables(credentials)
 
 if __name__ == "__main__":
-    login_and_access_project()
+    main()

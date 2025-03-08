@@ -2,82 +2,158 @@ import os
 import pandas as pd
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import gspread
 from datetime import datetime
 from dateutil import parser
 
-# Load environment variables
 load_dotenv()
 
-# Supabase configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
+BATCH_SIZE = 500 
 
-# Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
 
 def fetch_google_sheet():
-    """
-    Fetches data from a Google Sheet and returns it as a pandas DataFrame.
-    """
     try:
         csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRCe57F8CKLdvpbA959NXTt7I85CIWGE50p8rHwnVk-hH4x1wrGyPvtDe0qrx8pUoPYiVzIF4weF3bK/pub?gid=25398211&single=true&output=csv"
         df = pd.read_csv(csv_url)
-        df = df.where(pd.notna(df), None)  # Replace NaN with None
+        df = df.where(pd.notna(df), None)
         print(f"Fetched {len(df)} records from Google Sheet")
+        
         return df
     except Exception as e:
         print(f"Error fetching Google Sheet: {str(e)}")
         return pd.DataFrame()
 
+
 def normalize_phone_number(phone_number):
-    """
-    Normalizes phone numbers by converting them to integers and then to strings.
-    Removes any trailing `.0` or invalid characters.
-    """
     if pd.isna(phone_number) or phone_number is None:
         return None
     try:
-        return str(int(float(phone_number))).strip()  # Convert to integer and then to string
+        return str(int(float(phone_number))).strip()
     except (ValueError, TypeError):
         return None
 
-def check_single_entry():
-    """
-    Processes the first row of the DataFrame, checks if the phone number exists in the database,
-    and stops the process after verifying one entry.
-    """
-    # Fetch data from Google Sheet
+def parse_timestamp(timestamp_str):
+    if pd.isna(timestamp_str) or timestamp_str is None:
+        return None
+    try:
+        parsed_date = parser.parse(timestamp_str.replace('\u00e2\u20ac\u0178', '').strip())
+        return parsed_date.isoformat()
+    except Exception as e:
+        print(f"Error parsing timestamp '{timestamp_str}': {str(e)}")
+        return None
+
+
+def sync_customers():
     df = fetch_google_sheet()
     if df.empty:
         print("No data to process")
-        return
+        return 0
     
-    # Process only the first row
-    first_row = df.iloc[0]
-    phone_number = first_row.get("PHONE NUMBER ")
+   
+    processed_df = df.copy()
     
-    # Normalize the phone number
-    normalized_phone = normalize_phone_number(phone_number)
-    print(f"Phone number from Google Sheet: {phone_number}")
-    print(f"Normalized phone number: {normalized_phone}")
     
-    # Check if the phone number exists in the database
-    try:
-        print("Checking if the phone number exists in the database...")
-        response = (
-            supabase.table("customers")
-            .select("phone")
-            .eq("phone", normalized_phone)
-            .execute()
-        )
+    processed_df['normalized_phone'] = processed_df['PHONE NUMBER '].apply(normalize_phone_number)
+    
+    
+    if 'Timestamp' in processed_df.columns:
+        processed_df['parsed_timestamp'] = processed_df['Timestamp'].apply(parse_timestamp)
+     # Define the timestamp threshold
+    threshold_timestamp = datetime.fromisoformat("2025-03-07T18:54:45")
+
+    # Filter rows where parsed_timestamp is after the threshold
+    if 'parsed_timestamp' in processed_df.columns:
+        processed_df['parsed_timestamp'] = pd.to_datetime(processed_df['parsed_timestamp'])
+        processed_df = processed_df[processed_df['parsed_timestamp'] > threshold_timestamp]
+    
+    processed_df = processed_df[processed_df['normalized_phone'].notna()]
+    
+    
+    processed_df = processed_df.drop_duplicates(subset=['normalized_phone'])
+    
+    print(f"After removing duplicates: {len(processed_df)} unique customers")
+    
+    
+    status_columns = [col for col in processed_df.columns if 'STATUS' in col]
+    if len(status_columns) >= 3:
+        second_status_column = status_columns[2]
+        print(f"Using second status column: '{second_status_column}'")
+    else:
+        second_status_column = "STATUS " if "STATUS " in processed_df.columns else "STATUS"
+        print(f"Only found one status column: '{second_status_column}'")
+    
+    
+    total_records = len(processed_df)
+    total_batches = (total_records + BATCH_SIZE - 1) // BATCH_SIZE  
+    total_inserted = 0
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * BATCH_SIZE
+        end_idx = min((batch_num + 1) * BATCH_SIZE, total_records)
         
-        if response.data:
-            print(f"Phone number '{normalized_phone}' already exists in the database.")
-            print("Retrieved phone number from database:", response.data[0]["phone"])
-        else:
-            print(f"Phone number '{normalized_phone}' does not exist in the database.")
-    except Exception as e:
-        print(f"Error checking database: {str(e)}")
+        batch_df = processed_df.iloc[start_idx:end_idx]
+        phone_numbers = batch_df['normalized_phone'].tolist()
+        
+        print(f"\nProcessing batch {batch_num+1}/{total_batches} ({len(phone_numbers)} customers)")
+        
+        
+        try:
+            response = (
+                supabase.table("customers")
+                .select("phone")
+                .in_("phone", phone_numbers)
+                .execute()
+            )
+            
+            existing_phones = {record['phone'] for record in response.data}
+        except Exception as e:
+            print(f"Error checking existing phone numbers: {str(e)}")
+            continue
+        
+        
+        records_to_insert = []
+        for _, row in batch_df.iterrows():
+            phone_number = row['normalized_phone']
+            
+            if phone_number in existing_phones:
+                continue
+            
+            record = {
+                "name": row.get("NAME "),  
+                "phone": phone_number,
+                "customer_type": row.get("TYPE") if "TYPE" in processed_df.columns else None,
+                "category": row.get("REQUIRED ITEM /CATEGORY") if "REQUIRED ITEM /CATEGORY" in processed_df.columns else None,
+                "status": row.get(second_status_column),  
+                "customer_created_date": row.get("parsed_timestamp")
+            }
+            
+            
+            record = {k: None if pd.isna(v) else v for k, v in record.items()}
+            
+            
+            for key, value in record.items():
+                if isinstance(value, float) and value.is_integer():
+                    record[key] = int(value)
+            
+            records_to_insert.append(record)
+        
+        
+        if records_to_insert:
+            try:
+                print(records_to_insert)
+                total_inserted += len(records_to_insert)
+                print(f"Inserted {len(records_to_insert)} new records")
+            except Exception as e:
+                print(f"Error inserting records: {str(e)}")
+    
+    
+    
+    
+    print(f"\nSync completed. Total customers inserted: {total_inserted}")
+    return total_inserted
 
 if __name__ == "__main__":
-    check_single_entry()
+    sync_customers()
