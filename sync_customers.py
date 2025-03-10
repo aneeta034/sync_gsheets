@@ -52,15 +52,15 @@ def get_dynamic_threshold_timestamp():
             .select("timestamp")
             .gt("records_inserted", 0)
             .order("timestamp", desc=True)
-            .limit(1)
+            .limit(2)
             .execute()
         )
         
         if not response.data:
             print("No previous successful sync found, using default threshold")
         
-        last_sync_time = datetime.fromisoformat(response.data[0]['timestamp'].replace('Z', ''))
-        window_start = last_sync_time - timedelta(minutes=5)
+        last_sync_time = datetime.fromisoformat(response.data[1]['timestamp'].replace('Z', ''))
+        window_start = last_sync_time - timedelta(minutes=1)
         
         
         customer_response = (
